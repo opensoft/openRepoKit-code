@@ -73,6 +73,30 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("Kit owns", result.stderr)
 
+    def test_missing_recursive_dependency_refused(self):
+        checkout = self.root / "incomplete-code"
+        result = self.call("git", "clone", "--quiet", "--no-hardlinks", CODE, checkout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for row in json.loads((CODE.parent / "spec/contracts/components.json").read_text())["components"]:
+            result = self.call("git", "clone", "--quiet", CODE / row["path"], checkout / row["path"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.call(sys.executable, checkout / "openRepoKit", "--manifest",
+                           CODE.parent / "spec/contracts/components.json", "verify")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("recursive dependency", result.stderr)
+
+    def test_installed_source_drift_refused(self):
+        release = (self.prefix / "bin/project").resolve().parent
+        source = release / "components/openRepoShape/openRepoShape"
+        original = source.read_bytes()
+        try:
+            source.write_bytes(original + b"\n# test drift\n")
+            result = self.call(sys.executable, CODE / "openRepoKit", "install", "--prefix", self.prefix)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("release was modified", result.stderr)
+        finally:
+            source.write_bytes(original)
+
     def test_default_install_preserves_user_claude(self):
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".claude-profiles").exists())

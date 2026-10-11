@@ -63,6 +63,8 @@ def snapshot(source, destination):
             target = destination / relative
             # Git creates empty directories for gitlinks; clone accepts them.
             snapshot(source / relative, target)
+            url = git(source, "config", "-f", ".gitmodules", "--get", line.split()[0][:-4] + "url")
+            git(target, "remote", "set-url", "origin", url)
 
 
 def install(args):
@@ -72,6 +74,8 @@ def install(args):
     if git(args.manifest.parent.parent, "status", "--porcelain", "--untracked-files=all"):
         raise ValueError("Commit the spec leg before installing a release")
     prefix = args.prefix.expanduser().absolute()
+    if prefix.is_symlink() or (prefix / "bin").is_symlink() or (prefix / "releases").is_symlink():
+        raise ValueError("Installation prefix, bin and releases must be real directories")
     workbenches = str(args.workbenches.expanduser().resolve()) if args.workbenches else None
     if workbenches and not (Path(workbenches) / "config/bench-config.json").is_file():
         raise ValueError("--workbenches must name a workBenches checkout")
@@ -156,7 +160,7 @@ def main():
             verify(args.manifest)
         else:
             install(args)
-    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+    except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError) as exc:
         detail = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else str(exc)
         print(f"REFUSED: {detail}", file=sys.stderr)
         return 2
