@@ -1,0 +1,9 @@
+[submodule "components/openRepoShape"]
+	path = components/openRepoShape
+	url = https://github.com/opensoft/openRepoShape.git
+[submodule "components/openRepoTools"]
+	path = components/openRepoTools
+	url = https://github.com/opensoft/openRepoTools.git
+[submodule "components/openRepoProject"]
+	path = components/openRepoProject
+	url = https://github.com/opensoft/openRepoProject.git
