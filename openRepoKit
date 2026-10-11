@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Pinned openRepoKit distribution. SPDX-License-Identifier: Apache-2.0."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+CODE = Path(__file__).resolve().parent
+MANIFEST = CODE.parent / "spec/contracts/components.json"
+NAMES = {"openRepoShape", "openRepoTools", "openRepoProject"}
+
+
+def run(args, cwd=None, env=None):
+    return subprocess.run(args, cwd=cwd, env=env, check=True,
+                          text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
+
+
+def git(path, *args):
+    return run(["git", "-C", str(path), *args])
+
+
+def verify(manifest):
+    data = json.loads(manifest.read_text())
+    rows = data.get("components", [])
+    if data.get("schema_version") != 1 or len(rows) != 3 or {r["name"] for r in rows} != NAMES:
+        raise ValueError("Expected the three Kit components in schema version 1")
+    for row in rows:
+        name, commit = row["name"], row["commit"]
+        if row["path"] != f"components/{name}" or row["repository"] != f"opensoft/{name}":
+            raise ValueError(f"Unexpected component identity: {name}")
+        if not re.fullmatch("[0-9a-f]{40}", commit):
+            raise ValueError(f"Expected a full commit for {name}")
+        link = git(CODE, "ls-tree", "HEAD", "--", row["path"]).split()
+        if len(link) < 3 or link[0] != "160000" or link[2] != commit:
+            raise ValueError(f"{name}: committed gitlink differs from spec contract")
+        source = CODE / row["path"]
+        if not (source / ".git").exists() or git(source, "rev-parse", "HEAD") != commit:
+            raise ValueError(f"{name}: missing checkout or wrong revision; initialize recursive submodules")
+        for line in git(source, "submodule", "status", "--recursive").splitlines():
+            if line[0] in "-+U":
+                raise ValueError(f"{name}: missing or mismatched recursive dependency: {line}")
+        if git(source, "status", "--porcelain", "--untracked-files=all"):
+            raise ValueError(f"{name}: modified source tree")
+        print(f"{name}: {commit}")
+    return data
+
+
+def snapshot(source, destination):
+    """Copy Git objects without hardlinks; recursively copy exact local mounts."""
+    run(["git", "clone", "--quiet", "--no-hardlinks", "--", str(source), str(destination)])
+    git(destination, "checkout", "--quiet", "--detach", git(source, "rev-parse", "HEAD"))
+    git(destination, "remote", "set-url", "origin", git(source, "remote", "get-url", "origin"))
+    modules = source / ".gitmodules"
+    if modules.is_file():
+        for line in git(source, "config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$").splitlines():
+            _, relative = line.split(None, 1)
+            target = destination / relative
+            # Git creates empty directories for gitlinks; clone accepts them.
+            snapshot(source / relative, target)
+
+
+def install(args):
+    data = verify(args.manifest)
+    if git(CODE, "status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("Commit the code leg before installing a release")
+    if git(args.manifest.parent.parent, "status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("Commit the spec leg before installing a release")
+    prefix = args.prefix.expanduser().absolute()
+    workbenches = str(args.workbenches.expanduser().resolve()) if args.workbenches else None
+    if workbenches and not (Path(workbenches) / "config/bench-config.json").is_file():
+        raise ValueError("--workbenches must name a workBenches checkout")
+    data.update(code_commit=git(CODE, "rev-parse", "HEAD"),
+                spec_commit=git(args.manifest.parent.parent, "rev-parse", "HEAD"),
+                workbenches=workbenches)
+    identity = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:20]
+    release = prefix / "releases" / identity
+    tools = CODE / "components/openRepoTools"
+    text = (tools / "openRepoTools").read_text()
+    match = re.search(r"^INSTALLABLES=\(([^)]+)\)", text, re.M)
+    if not match:
+        raise ValueError("Cannot read upstream Tools installation contract")
+    commands = match[1].split() + ["openRepoShape", "project", "openRepoKit"]
+    for name in commands:
+        target = prefix / "bin" / name
+        if target.exists() or target.is_symlink():
+            if not target.is_symlink() or not target.resolve().is_relative_to(prefix / "releases"):
+                raise ValueError(f"Refusing unmanaged command collision: {target}")
+    if release.exists():
+        if args.with_claude_integration:
+            raise ValueError("Release already exists; activate Claude integration during a fresh-prefix installation")
+        for row in data["components"]:
+            source = release / row["path"]
+            if git(source, "rev-parse", "HEAD") != row["commit"] or git(source, "status", "--porcelain", "--untracked-files=all"):
+                raise ValueError(f"Installed release was modified: {source}")
+        print(f"Already installed openRepoKit {identity} at {release}")
+        return
+    prefix.mkdir(parents=True, exist_ok=True)
+    (prefix / "releases").mkdir(exist_ok=True)
+    pending = Path(tempfile.mkdtemp(prefix=".pending-", dir=prefix / "releases"))
+    try:
+        for row in data["components"]:
+            snapshot(CODE / row["path"], pending / row["path"])
+            git(pending / row["path"], "remote", "set-url", "origin",
+                f"https://github.com/{row['repository']}.git")
+        shutil.copy2(CODE / "launcher.py", pending / "launcher.py")
+        shutil.copy2(CODE / "openRepoKit", pending / "openRepoKit-source")
+        (pending / "manifest.json").write_text(json.dumps(data, indent=2) + "\n")
+        env = dict(os.environ, OPENREPOTOOLS_BIN_DIR=str(pending / "payload"),
+                   OPENREPOTOOLS_DATA_DIR=str(pending / "receipts"),
+                   OPENREPOTOOLS_REF=next(r["commit"] for r in data["components"] if r["name"] == "openRepoTools"))
+        if not args.with_claude_integration:
+            env.update(CLAUDE_PROFILES_HOME=str(pending / "integration/profiles"),
+                       CLAUDE_USER_DIR=str(pending / "integration/claude"))
+        output = run(["bash", str(pending / "components/openRepoTools/openRepoTools"), "--install"], env=env)
+        print(output)
+        (pending / "bin").mkdir()
+        for name in commands:
+            if name == "repos.tsv":
+                (pending / "bin" / name).symlink_to("../components/openRepoTools/repos.tsv")
+            else:
+                (pending / "bin" / name).symlink_to("../launcher.py")
+        (pending / "launcher.py").chmod(0o755)
+        pending.rename(release)
+        (prefix / "bin").mkdir(exist_ok=True)
+        for name in commands:
+            target = prefix / "bin" / name
+            temporary = target.with_name(f".{name}.pending-{os.getpid()}")
+            temporary.symlink_to(release / "bin" / name)
+            temporary.replace(target)
+    except BaseException:
+        if pending.exists():
+            shutil.rmtree(pending)
+        raise
+    print(f"Installed openRepoKit {identity}\nAdd to PATH: {prefix / 'bin'}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Verify and install a pinned openRepoKit Triad")
+    parser.add_argument("--manifest", type=Path, default=MANIFEST)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("verify", help="Verify component contracts, gitlinks and recursive checkouts")
+    install_parser = sub.add_parser("install", help="Install an isolated versioned bundle")
+    install_parser.add_argument("--prefix", type=Path, default=Path.home() / ".local/openRepoKit")
+    install_parser.add_argument("--workbenches", type=Path)
+    install_parser.add_argument("--with-claude-integration", action="store_true",
+                                help="Activate upstream Claude skills/hooks in user configuration")
+    args = parser.parse_args()
+    try:
+        if args.command == "verify":
+            verify(args.manifest)
+        else:
+            install(args)
+    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+        detail = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+        print(f"REFUSED: {detail}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
