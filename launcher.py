@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dispatch existing commands to one immutable Kit release."""
+"""Dispatch existing commands to one immutable Kit release. SPDX-License-Identifier: Apache-2.0."""
 import json
 import os
 from pathlib import Path
