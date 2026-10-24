@@ -62,6 +62,18 @@ class DistributionTests(unittest.TestCase):
         self.assertNotIn("network forbidden", result.stderr)
         self.assertIn("manifest", result.stdout.lower())
 
+    def test_project_discovers_openbenches_through_installed_launcher(self):
+        home = self.root / "openbenches-home"
+        checkout = home / "projects/openBenches"
+        (checkout / "config").mkdir(parents=True)
+        (checkout / "config/bench-config.json").write_text('{"benches": {}}\n')
+        env = dict(self.env, HOME=str(home))
+        env.pop("WORKBENCHES_ROOT", None)
+        env.pop("PROJECTS_DIR", None)
+        result = self.call(self.prefix / "bin/project", "benches", "--json", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [])
+
     def test_shape_preflight_uses_bundled_setup(self):
         result = self.call(self.prefix / "bin/openRepoShape", "--preflight")
         self.assertNotIn("network forbidden", result.stderr)
