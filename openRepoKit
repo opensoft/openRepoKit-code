@@ -78,7 +78,7 @@ def install(args):
         raise ValueError("Installation prefix, bin and releases must be real directories")
     workbenches = str(args.workbenches.expanduser().resolve()) if args.workbenches else None
     if workbenches and not (Path(workbenches) / "config/bench-config.json").is_file():
-        raise ValueError("--workbenches must name a workBenches checkout")
+        raise ValueError("--workbenches must name an openBenches or workBenches checkout")
     data.update(code_commit=git(CODE, "rev-parse", "HEAD"),
                 spec_commit=git(args.manifest.parent.parent, "rev-parse", "HEAD"),
                 workbenches=workbenches)
