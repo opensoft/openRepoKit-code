@@ -74,6 +74,21 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), [])
 
+    def test_project_explicit_workbenches_overrides_inherited_root(self):
+        explicit = self.root / "explicit-workBenches"
+        inherited = self.root / "inherited-workBenches"
+        for checkout, bench in ((explicit, "explicit"), (inherited, "inherited")):
+            (checkout / "config").mkdir(parents=True)
+            config = {"benches": {bench: {"path": "bench", "project_scripts": [
+                {"name": "test", "script": "test.sh"}]}}}
+            (checkout / "config/bench-config.json").write_text(json.dumps(config))
+        env = dict(self.env, WORKBENCHES_ROOT=str(inherited))
+        result = self.call(self.prefix / "bin/project", "benches", "--json",
+                           "--workbenches", explicit, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = json.loads(result.stdout)
+        self.assertEqual([row["bench"] for row in rows], ["explicit"])
+
     def test_shape_preflight_uses_bundled_setup(self):
         result = self.call(self.prefix / "bin/openRepoShape", "--preflight")
         self.assertNotIn("network forbidden", result.stderr)

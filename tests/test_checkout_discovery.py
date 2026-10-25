@@ -96,12 +96,17 @@ class CheckoutDiscoveryTests(unittest.TestCase):
         old = self.checkout(self.home / "Projects", "workBenches")
         self.assertEqual(self.discover(), str(old))
 
-    def test_explicit_root_overrides_saved_and_discovered_paths(self):
-        explicit = self.checkout(self.root, "explicit-workBenches")
+    def test_inherited_root_overrides_saved_marker_and_discovered_paths(self):
+        inherited = self.checkout(self.root, "inherited-workBenches")
         saved = self.checkout(self.root, "saved-workBenches")
+        marked = self.checkout(self.root, "marked-workBenches")
         self.checkout(self.home / "projects", "openBenches")
         self.write_manifest(str(saved))
-        self.assertEqual(self.discover({"WORKBENCHES_ROOT": str(explicit)}), str(explicit))
+        marker = self.release / ".workbenches-path"
+        marker.write_text(str(marked) + "\n")
+        self.assertEqual(self.discover({"WORKBENCHES_ROOT": str(inherited)}),
+                         str(inherited))
+        self.assertEqual(marker.read_text(), str(marked) + "\n")
 
     def test_saved_release_metadata_overrides_discovery(self):
         saved_old = self.checkout(self.root, "saved-workBenches")
